@@ -1,4 +1,4 @@
-package com.developer.service
+package com.developer.service.firebase
 
 import android.os.Build
 import com.google.firebase.iid.FirebaseInstanceId

